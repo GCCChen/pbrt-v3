@@ -135,7 +135,10 @@ void SBFIntegrator::Render(const Scene &scene) {
                             ray << " -> L = " << L;
 
                         // Add camera ray's contribution to image
-                        filmTile->AddSample(cameraSample.pFilm, L, rayWeight);
+                        SurfaceInteraction isect;
+                        scene.Intersect(ray, &isect);
+                        isect.shadingN = Faceforward(isect.shading.n, ray.d);
+                        filmTile->AddSample(cameraSample.pFilm, L, rayWeight, &isect);
 
                         // Free _MemoryArena_ memory from computing image sample
                         // value

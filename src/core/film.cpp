@@ -36,6 +36,11 @@
 #include "paramset.h"
 #include "imageio.h"
 #include "stats.h"
+#include "sbf/VectorNf.h"
+#include "sbf/SBFCommon.h"
+#include "sbf/TwoDArray.h"
+#include "sbf/CrossBilateralFilter.h"
+#include <iostream>
 
 namespace pbrt {
 
@@ -44,10 +49,22 @@ STAT_MEMORY_COUNTER("Memory/Film pixels", filmPixelMemory);
 // Film Method Definitions
 Film::Film(const Point2i &resolution, const Bounds2f &cropWindow,
            std::unique_ptr<Filter> filt, Float diagonal,
-           const std::string &filename, Float scale, Float maxSampleLuminance)
-    : fullResolution(resolution),
+           const std::string &filename, Float scale,
+         const vector<float> &interParams,
+         const vector<float> &finalParams,
+         float sigmaN, float sigmaR, float sigmaD,
+         float interMseSigma, float finalMseSigma,
+         Float maxSampleLuminance): fullResolution(resolution),
       diagonal(diagonal * .001),
       filter(std::move(filt)),
+      rFilter(filter),
+      interParams(interParams),
+      finalParams(finalParams),
+      sigmaN(sigmaN),
+      sigmaR(sigmaR),
+      sigmaD(sigmaD),
+      interMseSigma(interMseSigma),
+      finalMseSigma(finalMseSigma),
       filename(filename),
       scale(scale),
       maxSampleLuminance(maxSampleLuminance) {
@@ -65,16 +82,26 @@ Film::Film(const Point2i &resolution, const Bounds2f &cropWindow,
     pixels = std::unique_ptr<Pixel[]>(new Pixel[croppedPixelBounds.Area()]);
     filmPixelMemory += croppedPixelBounds.Area() * sizeof(Pixel);
 
-    // Precompute filter weight table
-    int offset = 0;
-    for (int y = 0; y < filterTableWidth; ++y) {
-        for (int x = 0; x < filterTableWidth; ++x, ++offset) {
-            Point2f p;
-            p.x = (x + 0.5f) * filter->radius.x / filterTableWidth;
-            p.y = (y + 0.5f) * filter->radius.y / filterTableWidth;
-            filterTable[offset] = filter->Evaluate(p);
-        }
-    }
+    int xPixelCount = croppedPixelBounds.pMax.x - croppedPixelBounds.pMin.x;
+    int yPixelCount = croppedPixelBounds.pMax.y - croppedPixelBounds.pMin.y;
+
+    colImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    varImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    featureImg = TwoDArray<Feature>(xPixelCount, yPixelCount);
+    featureVarImg = TwoDArray<Feature>(xPixelCount, yPixelCount);
+
+    norImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    rhoImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    depthImg = TwoDArray<float>(xPixelCount, yPixelCount);
+    rhoVarImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    norVarImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    depthVarImg = TwoDArray<float>(xPixelCount, yPixelCount);
+    
+    fltImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+    minMseImg = TwoDArray<float>(xPixelCount, yPixelCount);
+    adaptImg = TwoDArray<float>(xPixelCount, yPixelCount);
+    sigmaImg = TwoDArray<Color>(xPixelCount, yPixelCount);
+
 }
 
 Bounds2i Film::GetSampleBounds() const {
@@ -142,7 +169,123 @@ void Film::SetImage(const Spectrum *img) const {
 void Film::AddSplat(const Point2f &p, Spectrum v) {
 }
 
+void Film::Update(bool final) {
+    for (Point2i p: croppedPixelBounds) {
+            auto &pixelInfo = GetPixel(p);
+            float invSampleCount = 1.f/(float)pixelInfo.sampleCount;
+            float invSampleCount_1 = 1.f/((float)pixelInfo.sampleCount-1.f);
+            Color colSum = Color(pixelInfo.Lrgb);
+            Color sqColSum = Color(pixelInfo.sqLrgb);
+            Color colMean = colSum*invSampleCount;
+            Color colVar = (sqColSum - colSum*colMean) * 
+                           invSampleCount_1 * invSampleCount;
+
+            Color norSum = Color(pixelInfo.normal);
+            Color sqNorSum = Color(pixelInfo.sqNormal);
+            Color norMean = norSum*invSampleCount;
+            Color norVar = (sqNorSum - norSum*norMean) *
+                           invSampleCount_1;
+            
+            Color rhoSum = Color(pixelInfo.rho);
+            Color sqRhoSum = Color(pixelInfo.sqRho);
+            Color rhoMean = rhoSum*invSampleCount;
+            Color rhoVar = (sqRhoSum - rhoSum*rhoMean) *
+                           invSampleCount_1;
+            
+            float depthSum = pixelInfo.depth;
+            float sqDepthSum = pixelInfo.sqDepth;
+            float depthMean = depthSum * invSampleCount;
+            float depthVar = (sqDepthSum - depthSum*depthMean) *
+                             invSampleCount_1;
+            
+            int x = p.x, y = p.y;
+            colImg(x, y) = colMean;
+            varImg(x, y) = colVar;
+            norImg(x, y) = norMean;
+            norVarImg(x, y) = norVar;
+            rhoImg(x, y) = rhoMean;            
+            rhoVarImg(x, y) = rhoVar;
+            depthImg(x, y) = depthMean;
+            depthVarImg(x, y) = depthVar;
+
+            Feature feature, featureVar;
+            feature[0] = norMean[0];
+            feature[1] = norMean[1];
+            feature[2] = norMean[2];
+            // feature[3] = rhoMean[0];
+            // feature[4] = rhoMean[1];
+            // feature[5] = rhoMean[2];
+            // feature[6] = depthMean;
+            featureVar[0] = norVar[0];
+            featureVar[1] = norVar[1];
+            featureVar[2] = norVar[2];
+            // featureVar[3] = rhoVar[0];
+            // featureVar[4] = rhoVar[1];
+            // featureVar[5] = rhoVar[2];
+            // featureVar[6] = depthVar;
+            
+            featureImg(x, y) = feature;
+            featureVarImg(x, y) = featureVar;
+    }
+    TwoDArray<Color> rColImg = colImg;
+    rFilter.Apply(rColImg);
+    TwoDArray<Color> rVarImg = varImg;
+    rFilter.Apply(rVarImg);
+
+
+    vector<float> sigma = final ? finalParams : interParams;
+    Feature sigmaF;
+    sigmaF[0] = sigmaF[1] = sigmaF[2] = sigmaN;
+
+    vector<TwoDArray<Color> > fltArray;
+    vector<TwoDArray<float> > mseArray;
+    vector<TwoDArray<float> > priArray;
+    vector<TwoDArray<float> > wSumArray;
+    vector<TwoDArray<float> > fltMseArray;
+    vector<TwoDArray<float> > fltPriArray;
+
+    int xPixelCount = croppedPixelBounds.pMax.x - croppedPixelBounds.pMin.x;
+    int yPixelCount = croppedPixelBounds.pMax.y - croppedPixelBounds.pMin.y;
+    for(size_t i = 0; i < sigma.size(); i++) {
+        fltArray.push_back(TwoDArray<Color>(xPixelCount, yPixelCount));
+        mseArray.push_back(TwoDArray<float>(xPixelCount, yPixelCount));
+        priArray.push_back(TwoDArray<float>(xPixelCount, yPixelCount));
+        wSumArray.push_back(TwoDArray<float>(xPixelCount, yPixelCount));
+        fltMseArray.push_back(TwoDArray<float>(xPixelCount, yPixelCount));
+        fltPriArray.push_back(TwoDArray<float>(xPixelCount, yPixelCount));
+
+        CrossBilateralFilter cbFilter(sigma[i], 0, sigmaF, xPixelCount, yPixelCount); 
+        TwoDArray<Color> flt(xPixelCount, yPixelCount);
+        TwoDArray<float> mse(xPixelCount, yPixelCount);            
+        TwoDArray<float> pri(xPixelCount, yPixelCount);
+        cbFilter.Apply(colImg, featureImg, featureVarImg, rColImg, varImg, rVarImg, flt, mse, pri);
+        mseArray[i] = mse;
+        priArray[i] = pri;
+        fltArray[i] = flt;
+    }
+
+    CrossBilateralFilter mseFilter(final ? finalMseSigma : interMseSigma, 0.f, sigmaF, xPixelCount, yPixelCount); 
+    mseFilter.Apply(mseArray, priArray, featureImg, featureVarImg, fltMseArray, fltPriArray);
+
+    minMseImg = numeric_limits<float>::infinity();   
+    for(size_t i = 0; i < sigma.size(); i++) {
+        for(int y = 0; y < yPixelCount; y++)
+            for(int x = 0; x < xPixelCount; x++) {
+                float error = fltMseArray[i](x, y);                
+                float pri = fltPriArray[i](x, y);
+                if(error < minMseImg(x, y)) {
+                    Color c = fltArray[i](x, y);
+                    adaptImg(x, y) = max(pri, 0.f) / (float)(1.f + GetPixel(Point2i(x, y)).sampleCount);
+                    minMseImg(x, y) = error;
+                    fltImg(x, y) = c;
+                    sigmaImg(x, y) = Color((float)i/(float)sigma.size());
+            }
+        }
+    }
+}
+
 void Film::WriteImage(Float splatScale) {
+    Update(true);
     // Convert image to RGB and compute final pixel values
     LOG(INFO) <<
         "Converting image to RGB and computing final weighted pixel values";
@@ -151,9 +294,9 @@ void Film::WriteImage(Float splatScale) {
     for (Point2i p : croppedPixelBounds) {
         // Convert pixel XYZ color to RGB
         Pixel &pixel = GetPixel(p);
-        rgb[3*offset] = pixel.Lrgb[0] / pixel.sampleCount;
-        rgb[3*offset + 1] = pixel.Lrgb[1] / pixel.sampleCount;
-        rgb[3*offset + 2] = pixel.Lrgb[2] / pixel.sampleCount;
+        rgb[3*offset] = fltImg(p.x, p.y)[0];
+        rgb[3*offset + 1] = fltImg(p.x, p.y)[1];
+        rgb[3*offset + 2] = fltImg(p.x, p.y)[2];
         ++offset;
     }
 
@@ -200,8 +343,34 @@ Film *CreateFilm(const ParamSet &params, std::unique_ptr<Filter> filter) {
     Float diagonal = params.FindOneFloat("diagonal", 35.);
     Float maxSampleLuminance = params.FindOneFloat("maxsampleluminance",
                                                    Infinity);
+
+    int nInterParams = 0;
+    const float *interParams = params.FindFloat("interparams", &nInterParams);
+    vector<float> interParamsV;
+    if(nInterParams == 0) {
+        interParamsV.push_back(0.f);
+    } else {
+        for(int i = 0; i < nInterParams; i++)
+            interParamsV.push_back(interParams[i]);
+    }
+    int nFinalParams = 0;
+    const float *finalParams = params.FindFloat("finalparams", &nFinalParams);
+    vector<float> finalParamsV;
+    if(nFinalParams == 0) {
+        finalParamsV.push_back(0.f);
+    } else {
+        for(int i = 0; i < nFinalParams; i++)
+            finalParamsV.push_back(finalParams[i]);
+    }
+
+    float sigmaN = params.FindOneFloat("sigman", 0.8f);
+    float sigmaR = params.FindOneFloat("sigmar", 0.25f);
+    float sigmaD = params.FindOneFloat("sigmad", 0.6f);
+    float interMseSigma = params.FindOneFloat("intermsesigma", 4.f);
+    float finalMseSigma = params.FindOneFloat("finalmsesigma", 8.f);
+
     return new Film(Point2i(xres, yres), crop, std::move(filter), diagonal,
-                    filename, scale, maxSampleLuminance);
+                    filename, scale, interParamsV, finalParamsV, sigmaN, sigmaR, sigmaD, interMseSigma, finalMseSigma, maxSampleLuminance);
 }
 
 }  // namespace pbrt

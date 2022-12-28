@@ -45,6 +45,11 @@
 #include "filter.h"
 #include "stats.h"
 #include "parallel.h"
+#include "interaction.h"
+#include "sbf/TwoDArray.h"
+#include "sbf/VectorNf.h"
+#include "sbf/SBFCommon.h"
+#include "sbf/ReconstructionFilter.h"
 
 namespace pbrt {
 
@@ -78,7 +83,12 @@ class Film {
     Film(const Point2i &resolution, const Bounds2f &cropWindow,
          std::unique_ptr<Filter> filter, Float diagonal,
          const std::string &filename, Float scale,
-         Float maxSampleLuminance = Infinity);
+         const vector<float> &interParams = vector<float>(),
+         const vector<float> &finalParams = vector<float>(),
+         float sigmaN = 0, float sigmaR = 0, float sigmaD = 0,
+         float interMseSigma = 0, float finalMseSigma = 0,
+         Float maxSampleLuminance = Infinity
+         );
     Bounds2i GetSampleBounds() const;
     Bounds2f GetPhysicalExtent() const;
     std::unique_ptr<FilmTile> GetFilmTile(const Bounds2i &sampleBounds);
@@ -87,11 +97,12 @@ class Film {
     void AddSplat(const Point2f &p, Spectrum v);
     void WriteImage(Float splatScale = 1);
     void Clear();
+    void Update(bool final);
 
     // Film Public Data
     const Point2i fullResolution;
     const Float diagonal;
-    std::unique_ptr<Filter> filter;
+    std::shared_ptr<Filter> filter;
     const std::string filename;
     Bounds2i croppedPixelBounds;
 
@@ -118,6 +129,8 @@ class Film {
         float weightSum;
         int sampleCount;
     };
+
+    ReconstructionFilter rFilter;
     std::unique_ptr<Pixel[]> pixels;
     static PBRT_CONSTEXPR int filterTableWidth = 16;
     Float filterTable[filterTableWidth * filterTableWidth];
@@ -133,6 +146,30 @@ class Film {
                      (p.y - croppedPixelBounds.pMin.y) * width;
         return pixels[offset];
     }
+    // Storing the image, features and their variance 
+    // reconstructed by default filter
+    TwoDArray<Color> colImg;
+    TwoDArray<Color> varImg;
+    TwoDArray<Feature> featureImg;
+    TwoDArray<Feature> featureVarImg;
+    // The adaptive sampling metric
+    TwoDArray<float> adaptImg; 
+    // Filtered image
+    TwoDArray<Color> fltImg;
+
+    // These images are stored for debug and visualization
+    TwoDArray<Color> rhoImg;
+    TwoDArray<Color> rhoVarImg;
+    TwoDArray<Color> norImg;
+    TwoDArray<Color> norVarImg;
+    TwoDArray<float> depthImg;
+    TwoDArray<float> depthVarImg;
+    TwoDArray<float> minMseImg;
+    TwoDArray<Color> sigmaImg;
+
+    vector<float> interParams, finalParams;
+    float sigmaN, sigmaR, sigmaD;
+    float interMseSigma, finalMseSigma;
 };
 
 class FilmTile {
@@ -149,7 +186,7 @@ class FilmTile {
           maxSampleLuminance(maxSampleLuminance) {
         pixels = std::vector<FilmTilePixel>(std::max(0, pixelBounds.Area()));
     }
-    void AddSample(const Point2f &pFilm, Spectrum L, Float sampleWeight = 1.) {
+    void AddSample(const Point2f &pFilm, Spectrum L, Float sampleWeight = 1., SurfaceInteraction *isect = NULL) {
         ProfilePhase _(Prof::AddFilmSample);
         int x = std::floor(pFilm.x);
         int y = std::floor(pFilm.y);
@@ -163,7 +200,11 @@ class FilmTile {
         for(int i = 0; i < 3; i++) {
             pixel.Lrgb[i] += rgb[i];
             pixel.sqLrgb[i] += rgb[i]*rgb[i];
-            // lack of information about isec
+            // lack of information about rho, depth
+            if (!isect->shading.n.HasNaNs()) {
+                pixel.normal[i] += isect->shading.n[i];
+                pixel.sqNormal[i] += isect->shading.n[i] * isect->shading.n[i];
+            }
         }    
         pixel.sampleCount++;
     }
