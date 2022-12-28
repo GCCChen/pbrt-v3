@@ -59,7 +59,7 @@ void SBFIntegrator::Render(const Scene &scene) {
     
 
     {
-        for (int iterationId = 0; iterationId < 10; iterationId++) {
+        for (int iterationId = 0; iterationId < 1; iterationId++) {
             auto renderTask = [&](Point2i tile) {
                 // Render section of image corresponding to _tile_
 
@@ -68,7 +68,6 @@ void SBFIntegrator::Render(const Scene &scene) {
 
                 // Get sampler instance for tile
                 int seed = tile.y * nTiles.x + tile.x + (nTiles.x * nTiles.y) * iterationId;
-                std::cout << tile.y << " " << tile.x << " " << iterationId << " " << seed << std::endl;
                 std::unique_ptr<Sampler> tileSampler = sampler->Clone(seed);
 
                 // Compute sample bounds for tile

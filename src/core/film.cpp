@@ -108,9 +108,14 @@ std::unique_ptr<FilmTile> Film::GetFilmTile(const Bounds2i &sampleBounds) {
 void Film::Clear() {
     for (Point2i p : croppedPixelBounds) {
         Pixel &pixel = GetPixel(p);
-        for (int c = 0; c < 3; ++c)
-            pixel.splatXYZ[c] = pixel.xyz[c] = 0;
-        pixel.filterWeightSum = 0;
+        for (int i = 0; i < 3; i++) {
+            pixel.Lrgb[i] = pixel.sqLrgb[i] =
+                pixel.normal[i] = pixel.sqNormal[i] = 
+                pixel.rho[i] = pixel.sqRho[i] =  
+                pixel.depth = pixel.sqDepth = 0.f;
+
+        }
+        pixel.sampleCount = 0;
     }
 }
 
@@ -122,48 +127,19 @@ void Film::MergeFilmTile(std::unique_ptr<FilmTile> tile) {
         // Merge _pixel_ into _Film::pixels_
         const FilmTilePixel &tilePixel = tile->GetPixel(pixel);
         Pixel &mergePixel = GetPixel(pixel);
-        Float xyz[3];
-        tilePixel.contribSum.ToXYZ(xyz);
-        for (int i = 0; i < 3; ++i) mergePixel.xyz[i] += xyz[i];
-        mergePixel.filterWeightSum += tilePixel.filterWeightSum;
+
+        for (int i = 0; i < 3; i++) {
+            mergePixel.Lrgb[i] += tilePixel.Lrgb[i];
+            mergePixel.sqLrgb[i] += tilePixel.sqLrgb[i];
+        }
+        mergePixel.sampleCount += tilePixel.sampleCount;
     }
 }
 
 void Film::SetImage(const Spectrum *img) const {
-    int nPixels = croppedPixelBounds.Area();
-    for (int i = 0; i < nPixels; ++i) {
-        Pixel &p = pixels[i];
-        img[i].ToXYZ(p.xyz);
-        p.filterWeightSum = 1;
-        p.splatXYZ[0] = p.splatXYZ[1] = p.splatXYZ[2] = 0;
-    }
 }
 
 void Film::AddSplat(const Point2f &p, Spectrum v) {
-    ProfilePhase pp(Prof::SplatFilm);
-
-    if (v.HasNaNs()) {
-        LOG(ERROR) << StringPrintf("Ignoring splatted spectrum with NaN values "
-                                   "at (%f, %f)", p.x, p.y);
-        return;
-    } else if (v.y() < 0.) {
-        LOG(ERROR) << StringPrintf("Ignoring splatted spectrum with negative "
-                                   "luminance %f at (%f, %f)", v.y(), p.x, p.y);
-        return;
-    } else if (std::isinf(v.y())) {
-        LOG(ERROR) << StringPrintf("Ignoring splatted spectrum with infinite "
-                                   "luminance at (%f, %f)", p.x, p.y);
-        return;
-    }
-
-    Point2i pi = Point2i(Floor(p));
-    if (!InsideExclusive(pi, croppedPixelBounds)) return;
-    if (v.y() > maxSampleLuminance)
-        v *= maxSampleLuminance / v.y();
-    Float xyz[3];
-    v.ToXYZ(xyz);
-    Pixel &pixel = GetPixel(pi);
-    for (int i = 0; i < 3; ++i) pixel.splatXYZ[i].Add(xyz[i]);
 }
 
 void Film::WriteImage(Float splatScale) {
@@ -175,32 +151,9 @@ void Film::WriteImage(Float splatScale) {
     for (Point2i p : croppedPixelBounds) {
         // Convert pixel XYZ color to RGB
         Pixel &pixel = GetPixel(p);
-        XYZToRGB(pixel.xyz, &rgb[3 * offset]);
-
-        // Normalize pixel with weight sum
-        Float filterWeightSum = pixel.filterWeightSum;
-        if (filterWeightSum != 0) {
-            Float invWt = (Float)1 / filterWeightSum;
-            rgb[3 * offset] = std::max((Float)0, rgb[3 * offset] * invWt);
-            rgb[3 * offset + 1] =
-                std::max((Float)0, rgb[3 * offset + 1] * invWt);
-            rgb[3 * offset + 2] =
-                std::max((Float)0, rgb[3 * offset + 2] * invWt);
-        }
-
-        // Add splat value at pixel
-        Float splatRGB[3];
-        Float splatXYZ[3] = {pixel.splatXYZ[0], pixel.splatXYZ[1],
-                             pixel.splatXYZ[2]};
-        XYZToRGB(splatXYZ, splatRGB);
-        rgb[3 * offset] += splatScale * splatRGB[0];
-        rgb[3 * offset + 1] += splatScale * splatRGB[1];
-        rgb[3 * offset + 2] += splatScale * splatRGB[2];
-
-        // Scale pixel value by _scale_
-        rgb[3 * offset] *= scale;
-        rgb[3 * offset + 1] *= scale;
-        rgb[3 * offset + 2] *= scale;
+        rgb[3*offset] = pixel.Lrgb[0] / pixel.sampleCount;
+        rgb[3*offset + 1] = pixel.Lrgb[1] / pixel.sampleCount;
+        rgb[3*offset + 2] = pixel.Lrgb[2] / pixel.sampleCount;
         ++offset;
     }
 

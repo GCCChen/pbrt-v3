@@ -50,8 +50,25 @@ namespace pbrt {
 
 // FilmTilePixel Declarations
 struct FilmTilePixel {
-    Spectrum contribSum = 0.f;
-    Float filterWeightSum = 0.f;
+    FilmTilePixel() {
+        for(int i = 0; i < 3; i++) {
+            Lrgb[i] = sqLrgb[i] =
+                normal[i] = sqNormal[i] = 
+                rho[i] = sqRho[i] =  
+                depth = sqDepth = 0.f;
+        }
+        sampleCount = 0;
+    }
+    float Lrgb[3];
+    float sqLrgb[3];
+    float normal[3];
+    float sqNormal[3];
+    float rho[3];
+    float sqRho[3];
+    float depth;
+    float sqDepth;
+    float weightSum;
+    int sampleCount;
 };
 
 // Film Declarations
@@ -81,11 +98,25 @@ class Film {
   private:
     // Film Private Data
     struct Pixel {
-        Pixel() { xyz[0] = xyz[1] = xyz[2] = filterWeightSum = 0; }
-        Float xyz[3];
-        Float filterWeightSum;
-        AtomicFloat splatXYZ[3];
-        Float pad;
+        Pixel() {
+            for(int i = 0; i < 3; i++) {
+                Lrgb[i] = sqLrgb[i] =
+                    normal[i] = sqNormal[i] = 
+                    rho[i] = sqRho[i] =  
+                    depth = sqDepth = 0.f;
+            }
+            sampleCount = 0;
+        }
+        float Lrgb[3];
+        float sqLrgb[3];
+        float normal[3];
+        float sqNormal[3];
+        float rho[3];
+        float sqRho[3];
+        float depth;
+        float sqDepth;
+        float weightSum;
+        int sampleCount;
     };
     std::unique_ptr<Pixel[]> pixels;
     static PBRT_CONSTEXPR int filterTableWidth = 16;
@@ -118,46 +149,23 @@ class FilmTile {
           maxSampleLuminance(maxSampleLuminance) {
         pixels = std::vector<FilmTilePixel>(std::max(0, pixelBounds.Area()));
     }
-    void AddSample(const Point2f &pFilm, Spectrum L,
-                   Float sampleWeight = 1.) {
+    void AddSample(const Point2f &pFilm, Spectrum L, Float sampleWeight = 1.) {
         ProfilePhase _(Prof::AddFilmSample);
-        if (L.y() > maxSampleLuminance)
-            L *= maxSampleLuminance / L.y();
-        // Compute sample's raster bounds
-        Point2f pFilmDiscrete = pFilm - Vector2f(0.5f, 0.5f);
-        Point2i p0 = (Point2i)Ceil(pFilmDiscrete - filterRadius);
-        Point2i p1 =
-            (Point2i)Floor(pFilmDiscrete + filterRadius) + Point2i(1, 1);
-        p0 = Max(p0, pixelBounds.pMin);
-        p1 = Min(p1, pixelBounds.pMax);
+        int x = std::floor(pFilm.x);
+        int y = std::floor(pFilm.y);
 
-        // Loop over filter support and add sample to pixel arrays
+        FilmTilePixel &pixel = GetPixel(Point2i(x, y));
 
-        // Precompute $x$ and $y$ filter table offsets
-        int *ifx = ALLOCA(int, p1.x - p0.x);
-        for (int x = p0.x; x < p1.x; ++x) {
-            Float fx = std::abs((x - pFilmDiscrete.x) * invFilterRadius.x *
-                                filterTableSize);
-            ifx[x - p0.x] = std::min((int)std::floor(fx), filterTableSize - 1);
-        }
-        int *ify = ALLOCA(int, p1.y - p0.y);
-        for (int y = p0.y; y < p1.y; ++y) {
-            Float fy = std::abs((y - pFilmDiscrete.y) * invFilterRadius.y *
-                                filterTableSize);
-            ify[y - p0.y] = std::min((int)std::floor(fy), filterTableSize - 1);
-        }
-        for (int y = p0.y; y < p1.y; ++y) {
-            for (int x = p0.x; x < p1.x; ++x) {
-                // Evaluate filter value at $(x,y)$ pixel
-                int offset = ify[y - p0.y] * filterTableSize + ifx[x - p0.x];
-                Float filterWeight = filterTable[offset];
+        float rgb[3];
+        L.ToRGB(rgb);
+        float rhoRGB[3];
 
-                // Update pixel values with filtered sample contribution
-                FilmTilePixel &pixel = GetPixel(Point2i(x, y));
-                pixel.contribSum += L * sampleWeight * filterWeight;
-                pixel.filterWeightSum += filterWeight;
-            }
-        }
+        for(int i = 0; i < 3; i++) {
+            pixel.Lrgb[i] += rgb[i];
+            pixel.sqLrgb[i] += rgb[i]*rgb[i];
+            // lack of information about isec
+        }    
+        pixel.sampleCount++;
     }
     FilmTilePixel &GetPixel(const Point2i &p) {
         CHECK(InsideExclusive(p, pixelBounds));
