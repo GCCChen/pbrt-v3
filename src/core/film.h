@@ -98,6 +98,7 @@ class Film {
     void WriteImage(Float splatScale = 1);
     void Clear();
     void Update(bool final);
+    void GetAdaptPixels(float avgSpp, vector<vector<int> > &pixOff, vector<vector<int> > &pixSmp);
 
     // Film Public Data
     const Point2i fullResolution;

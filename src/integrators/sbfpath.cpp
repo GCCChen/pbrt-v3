@@ -31,6 +31,7 @@
  */
 
 // integrators/path.cpp*
+#include <iostream>
 #include "integrators/sbfpath.h"
 #include "bssrdf.h"
 #include "camera.h"
@@ -50,8 +51,8 @@ SBFPathIntegrator::SBFPathIntegrator(int maxDepth,
                                std::shared_ptr<const Camera> camera,
                                std::shared_ptr<Sampler> sampler,
                                const Bounds2i &pixelBounds, Float rrThreshold,
-                               const std::string &lightSampleStrategy)
-    : SBFIntegrator(camera, sampler, pixelBounds),
+                               const std::string &lightSampleStrategy, int initSample, float adaptiveSample, int maxSample, int adaptiveIteration)
+    : SBFIntegrator(camera, sampler, pixelBounds, initSample, adaptiveSample, maxSample, adaptiveIteration),
       maxDepth(maxDepth),
       rrThreshold(rrThreshold),
       lightSampleStrategy(lightSampleStrategy) {}
@@ -208,8 +209,15 @@ SBFPathIntegrator *CreateSBFPathIntegrator(const ParamSet &params,
     Float rrThreshold = params.FindOneFloat("rrthreshold", 1.);
     std::string lightStrategy =
         params.FindOneString("lightsamplestrategy", "spatial");
+    
+    int is = params.FindOneInt("initsamples", 8);
+    float ns = params.FindOneFloat("adaptivesamples", 24.f);
+    int ms = params.FindOneInt("maxsamples", 1024);
+    int it = params.FindOneInt("adaptiveiteration", 1);
+
+
     return new SBFPathIntegrator(maxDepth, camera, sampler, pixelBounds,
-                              rrThreshold, lightStrategy);
+                              rrThreshold, lightStrategy, is, ns, ms, it);
 }
 
 }  // namespace pbrt

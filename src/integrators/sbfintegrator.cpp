@@ -55,11 +55,16 @@ void SBFIntegrator::Render(const Scene &scene) {
     const int tileSize = 16;
     Point2i nTiles((sampleExtent.x + tileSize - 1) / tileSize,
                    (sampleExtent.y + tileSize - 1) / tileSize);
-    ProgressReporter reporter(nTiles.x * nTiles.y * 10, "Rendering");
+    ProgressReporter reporter(nTiles.x * nTiles.y * adaptiveIteration, "Rendering");
+
+    std::cout << "adapt" <<  adaptiveIteration << std::endl;
     
 
     {
-        for (int iterationId = 0; iterationId < 1; iterationId++) {
+        for (int iterationId = 0; iterationId < adaptiveIteration; iterationId++) {
+            vector<vector<int> > pixOff;
+            vector<vector<int> > pixSmp;
+            camera->film->GetAdaptPixels(adaptiveSample, pixOff, pixSmp);
             auto renderTask = [&](Point2i tile) {
                 // Render section of image corresponding to _tile_
 
@@ -87,11 +92,14 @@ void SBFIntegrator::Render(const Scene &scene) {
                     {
                         ProfilePhase pp(Prof::StartPixel);
                         tileSampler->StartPixel(pixel);
+                        tileSampler->SetSampleNumber(pixOff[pixel.y][pixel.x]);
                     }
 
                     if (!InsideExclusive(pixel, pixelBounds))
                         continue;
-                    do {
+
+                    int sampleCount = min(iterationId == 0 ? initSample : pixSmp[pixel.y][pixel.x], maxSample);
+                    for (int sampleId = 0; sampleId < sampleCount; sampleId++) {
                         // Initialize _CameraSample_ for current sample
                         CameraSample cameraSample =
                             tileSampler->GetCameraSample(pixel);
@@ -143,7 +151,8 @@ void SBFIntegrator::Render(const Scene &scene) {
                         // Free _MemoryArena_ memory from computing image sample
                         // value
                         arena.Reset();
-                    } while (tileSampler->StartNextSample());
+                        tileSampler->StartNextSample();
+                    }
                 }
                 LOG(INFO) << "Finished image tile " << tileBounds;
 

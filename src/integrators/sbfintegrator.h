@@ -52,8 +52,8 @@ class SBFIntegrator : public Integrator {
   public:
     SBFIntegrator(std::shared_ptr<const Camera> &camera,
                   std::shared_ptr<Sampler> sampler,
-                  const Bounds2i &pixelBounds)
-        :sampler(sampler), camera(camera), pixelBounds(pixelBounds) {}
+                  const Bounds2i &pixelBounds, int initSample = 8, float adaptiveSample = 24.f, int maxSample = 1024, int adaptiveIteration =  1)
+        :sampler(sampler), camera(camera), pixelBounds(pixelBounds), initSample(initSample), adaptiveSample(adaptiveSample), maxSample(maxSample), adaptiveIteration(adaptiveIteration) {}
     void Render(const Scene &scene);
     virtual void Preprocess(const Scene &scene, Sampler &sampler) {}
     virtual Spectrum Li(const RayDifferential &ray, const Scene &scene,
@@ -63,6 +63,9 @@ class SBFIntegrator : public Integrator {
     std::shared_ptr<Sampler> sampler;
     std::shared_ptr<const Camera> camera;
     const Bounds2i pixelBounds;
+    int initSample, maxSample, adaptiveIteration;
+    float adaptiveSample;
+
 };
 
 SBFIntegrator *CreateSBFIntegrator(

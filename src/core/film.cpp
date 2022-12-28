@@ -284,6 +284,46 @@ void Film::Update(bool final) {
     }
 }
 
+void Film::GetAdaptPixels(float avgSpp, vector<vector<int> > &pixOff, vector<vector<int> > &pixSmp) {
+    Update(false);
+
+    // Clear pixels
+    vector<vector<int> >().swap(pixOff);
+    vector<vector<int> >().swap(pixSmp);
+
+    int xPixelCount = croppedPixelBounds.pMax.x - croppedPixelBounds.pMin.x;
+    int yPixelCount = croppedPixelBounds.pMax.y - croppedPixelBounds.pMin.y;
+
+    // Fill offsets
+    pixOff.resize(yPixelCount);
+    for(int y = 0; y < yPixelCount; y++) {
+        pixOff[y].resize(xPixelCount);
+        for(int x = 0; x < xPixelCount; x++) 
+            pixOff[y][x] = GetPixel(Point2i(x, y)).sampleCount;        
+    }
+    
+    long double totalSamples = (long double)xPixelCount*
+                             (long double)yPixelCount*
+                             (long double)avgSpp;
+    
+    long double probSum = 0.0L;
+    for(int y = 0; y < yPixelCount; y++)
+        for(int x = 0; x < xPixelCount; x++) {
+            probSum += (long double)adaptImg(x, y);
+        }
+    long double invProbSum = 1.0L/probSum;
+
+    pixSmp.resize(yPixelCount);
+    for(int y = 0; y < yPixelCount; y++) {
+        pixSmp[y].resize(xPixelCount);
+        for(int x = 0; x < xPixelCount; x++) {
+            pixSmp[y][x] = 
+                max((int)ceil(totalSamples * 
+                    (long double)adaptImg(x, y) * invProbSum), 1);
+        }
+    }
+}
+
 void Film::WriteImage(Float splatScale) {
     Update(true);
     // Convert image to RGB and compute final pixel values
